@@ -1,0 +1,202 @@
+const getAmountForToken = async (token: string, priceTarget: number) => {
+  const accountValue = await getAccountValue();
+  const getMaxLeverage = coinInfo[token].maxLeverage;
+  const maxLeverageMinusOne = getMaxLeverage - maxlevminus; // !! define max leverage
+  const maxOrderValue = parseFloat(accountValue) * maxLeverageMinusOne;
+  const maxQty = maxOrderValue / priceTarget;
+  const qtyDecimals = coinInfo[token].szDecimals;
+  const amount = maxQty.toFixed(qtyDecimals);
+  return parseFloat(amount);
+};
+
+const executeMarketBuy = async () => {
+  console.log(bgGreen("EXECUTE BUY ORDER"));
+  const mid = getMid(TOKEN);
+  const priceDecimals = coinInfo[TOKEN].decimalsPrice;
+  const limitPx = Number((parseFloat(mid) * 1.05).toFixed(priceDecimals));
+  const size = await getAmountForToken(TOKEN, limitPx);
+  currentSize = size;
+  const cloid = generateRandomHex(32);
+
+  longCloids.push(cloid);
+  const buyOrder = {
+    coin: TOKEN,
+    isBuy: true,
+    sz: size,
+    limitPx,
+    orderType: { limit: { tif: "FrontendMarket" as Tif } },
+    reduceOnly: false,
+    cloid,
+  } as OrderRequest;
+
+  try {
+    const feedback = await exchange.bulkOrders([buyOrder]);
+    if (
+      // @ts-ignore
+      feedback.response.data.statuses[0]?.error
+    ) {
+      console.log(bgRed("HAS ERROR"));
+      console.error(feedback.response.data.statuses[0].error);
+      // @ts-ignore
+
+      throw new Error(feedback.response.data.statuses[0].error);
+    }
+  } catch (e) {
+    console.log(bgRed("BUY ORDER GOT REJECTED"));
+    console.error(e);
+  }
+};
+
+const executeMarketSell = async () => {
+  console.log(bgMagenta("EXECUTE SELL ORDER"));
+  const mid = getMid(TOKEN);
+  const priceDecimals = coinInfo[TOKEN].decimalsPrice;
+  const limitPx = Number((parseFloat(mid) * 0.95).toFixed(priceDecimals));
+  const size = currentSize;
+
+  const cloid = generateRandomHex(32);
+  shortCloids.push(cloid);
+
+  const sellOrder = {
+    coin: TOKEN,
+    isBuy: false,
+    sz: size,
+    limitPx: limitPx,
+    orderType: { limit: { tif: "FrontendMarket" as Tif } },
+    reduceOnly: false,
+    cloid,
+  };
+
+  try {
+    const feedback = await exchange.bulkOrders([sellOrder]);
+    if (
+      // @ts-ignore
+      feedback.response.data.statuses[0]?.error
+    ) {
+      // @ts-ignore
+      throw new Error(feedback.response.data.statuses[0].error);
+    }
+  } catch (e) {
+    console.log(bgRed("SELL ORDER GOT REJECTED"));
+    console.error(e);
+  }
+};
+
+ws1.on("message", async function incoming(data) {
+  const messageString = data.toString();
+  const dataObject = JSON.parse(messageString);
+  if (dataObject.channel === "allMids") {
+    mids = dataObject.data.mids;
+  }
+
+  if (dataObject.channel === "orderUpdates") {
+    for (let i = 0; i < dataObject.data.length; i++) {
+      ticker++;
+      const order = dataObject.data[i] as OrderSatus;
+      console.log(
+        bgBlue(
+          `[${ticker}] 🏆 ORDER UPDATES | Status "${order.status}" | OID: ${order.order.oid} | CLOID: ${order.order.cloid}`
+        )
+      );
+      const longCloid = getLastCloid("long");
+      const shortCloid = getLastCloid("short");
+
+      const isNotRejectedOrFilledorOpen =
+        order.status !== "rejected" &&
+        order.status !== "filled" &&
+        order.status !== "open";
+
+      if (isNotRejectedOrFilledorOpen) {
+        console.log(bgRed("ORDER IS NOT REJECTED OR FILLED"));
+        console.log(order);
+      }
+
+      const isRejectedLongOrder =
+        longCloid === order.order.cloid && order.status === "rejected";
+
+      if (isRejectedLongOrder) {
+        console.log(bgRed("LONG ORDER GOT REJECTED"));
+        console.log(red(order));
+        longCloids.pop();
+        await executeMarketBuy();
+      }
+
+      const isLongOrderFilled =
+        longCloid === order.order.cloid && order.status === "filled";
+      if (isLongOrderFilled) {
+        console.log(bgGreen("LONG ORDER GOT FILLED"));
+        await sleep(6000, 13500) // !! sleep timer
+        await executeMarketSell();
+      }
+
+      const isRejectedShortOrder =
+        shortCloid === order.order.cloid && order.status === "rejected";
+      if (isRejectedShortOrder) {
+        console.log(bgRed("SHORT ORDER GOT REJECTED"));
+        console.log(red(order));
+        shortCloids.pop();
+        await sleep(6000, 13500) //buy and sell in between
+        await executeMarketSell();
+      }
+
+      const isShortOrderFilled =
+        shortCloid === order.order.cloid && order.status === "filled";
+      if (isShortOrderFilled) {
+        tradeticker++;
+        console.log(bgGreen("SHORT ORDER GOT FILLED"));
+        console.log("🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉");
+        console.log("🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉");
+        console.log("🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉");
+        console.log(bgYellow("TRADE TICKER: " + tradeticker));
+        if (tradeticker > STOP_AFTER) {
+          process.exit();
+        } else {
+          await sleep(6000, 13500).then(async () => {
+            const randomToken =
+              tokens[Math.floor(Math.random() * tokens.length)];
+            TOKEN = randomToken;
+            console.log(
+              bgGreen(
+                `Switching to token: ${TOKEN}, with wallet: ${wallet.address}`
+              )
+            );
+            await sleep(6000, 13500) // between the buy and sell
+            await executeMarketBuy();
+          });
+        }
+      }
+    }
+  }
+});
+
+async function main() {
+  console.log(
+    blue(`Start trading for token: ${TOKEN}, with wallet: ${wallet.address}`)
+  );
+  const ex = await Exchange.create(wallet, MAINNET_API_URL);
+  exchange = ex;
+  const mid = getMid(TOKEN);
+  const details = await setCoinInfo();
+  while (!mid || !details) {
+    console.log(blue("Waiting for mid..."));
+    return main();
+  }
+  console.log(blue("Mid found..."));
+  await sleep(6000, 13500);
+  await executeMarketBuy();
+}
+
+function handleClose() {
+  if (ws1 && ws1.readyState === WebSocket.OPEN) {
+    console.log("Closing WebSocket...");
+    ws1.close(1000, "Process exiting");
+  }
+}
+function handleExit() {
+  handleClose();
+  // Perform other cleanup tasks if necessary
+  process.exit(); // Manually exit the process
+}
+
+process.on("SIGINT", handleExit); // Catches Ctrl+C
+process.on("SIGTERM", handleExit);
